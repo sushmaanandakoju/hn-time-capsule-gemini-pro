@@ -458,6 +458,14 @@ def get_data_dir(target_date: str) -> Path:
     return Path("data") / target_date
 
 
+def get_output_dir(target_date: str | None = None) -> Path:
+    """Get the output directory, optionally for a specific date."""
+    base = Path("output")
+    if target_date:
+        return base / target_date
+    return base
+
+
 def stage_fetch(target_date: str, limit: int | None = None):
     """Stage 1: Fetch frontpage and all article data."""
     data_dir = get_data_dir(target_date)
@@ -766,9 +774,23 @@ def stage_clean(target_date: str, stage: str | None = None, article_id: str | No
     print(f"Cleaned {stage_desc}{article_desc}: {deleted_count} files deleted")
 
 
-def stage_render(target_date: str):
-    """Stage 5: Render HTML summary."""
+def get_all_output_dates() -> list[str]:
+    """Get all dates that have been rendered to output directory."""
+    output_base = get_output_dir()
+    if not output_base.exists():
+        return []
+    dates = []
+    for d in output_base.iterdir():
+        if d.is_dir() and (d / "index.html").exists():
+            dates.append(d.name)
+    return sorted(dates)
+
+
+def stage_render(target_date: str, update_index: bool = True):
+    """Stage 5: Render HTML summary to output directory."""
     data_dir = get_data_dir(target_date)
+    output_dir = get_output_dir(target_date)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load frontpage
     frontpage_file = data_dir / "frontpage.json"
@@ -811,6 +833,15 @@ def stage_render(target_date: str):
             "grades": grades,
         })
 
+    # Get all dates for navigation
+    all_dates = get_all_output_dates()
+    # Add current date if not yet in list (we're about to render it)
+    if target_date not in all_dates:
+        all_dates = sorted(all_dates + [target_date])
+    current_idx = all_dates.index(target_date)
+    prev_date = all_dates[current_idx - 1] if current_idx > 0 else None
+    next_date = all_dates[current_idx + 1] if current_idx < len(all_dates) - 1 else None
+
     # Build HTML
     html_parts = [f"""<!DOCTYPE html>
 <html>
@@ -827,7 +858,13 @@ def stage_render(target_date: str):
         .sidebar {{ width: 350px; min-width: 350px; background: #f5f5f5; border-right: 1px solid #ddd;
                    overflow-y: auto; padding: 15px; }}
         .sidebar h1 {{ color: #ff6600; font-size: 1.3em; margin: 0 0 5px 0; }}
-        .sidebar h2 {{ font-size: 0.95em; color: #666; margin: 0 0 15px 0; font-weight: normal; }}
+        .sidebar h1 a {{ color: #ff6600; text-decoration: none; }}
+        .sidebar h1 a:hover {{ text-decoration: underline; }}
+        .sidebar h2 {{ font-size: 0.95em; color: #666; margin: 0 0 8px 0; font-weight: normal; }}
+        .nav {{ display: flex; gap: 10px; margin-bottom: 15px; font-size: 0.85em; }}
+        .nav a {{ color: #0066cc; text-decoration: none; }}
+        .nav a:hover {{ text-decoration: underline; }}
+        .nav .disabled {{ color: #ccc; }}
         .article-item {{ padding: 10px; margin-bottom: 8px; background: #fff; border-radius: 6px;
                         cursor: pointer; border: 2px solid transparent; transition: all 0.15s;
                         display: flex; align-items: flex-start; gap: 10px; }}
@@ -873,8 +910,13 @@ def stage_render(target_date: str):
 <body>
     <div class="container">
         <div class="sidebar">
-            <h1>HN Time Capsule</h1>
+            <h1><a href="../index.html">HN Time Capsule</a></h1>
             <h2>{target_date} (10 years ago)</h2>
+            <div class="nav">
+                {f'<a href="../{prev_date}/index.html">&larr; {prev_date}</a>' if prev_date else '<span class="disabled">&larr; prev</span>'}
+                <span>|</span>
+                {f'<a href="../{next_date}/index.html">{next_date} &rarr;</a>' if next_date else '<span class="disabled">next &rarr;</span>'}
+            </div>
 """]
 
     # Sidebar items
@@ -978,11 +1020,87 @@ def stage_render(target_date: str):
 </body>
 </html>""")
 
-    output_file = data_dir / "summary.html"
+    output_file = output_dir / "index.html"
     with open(output_file, 'w') as f:
         f.write("\n".join(html_parts))
 
     print(f"Rendered HTML to {output_file}")
+
+    if update_index:
+        stage_render_index()
+
+
+def stage_render_index():
+    """Render the main index page and re-render all day pages to update navigation."""
+    output_base = get_output_dir()
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    # Find all dates that have data (not just output)
+    data_base = Path("data")
+    all_dates = []
+    if data_base.exists():
+        for d in data_base.iterdir():
+            if d.is_dir() and (d / "frontpage.json").exists():
+                all_dates.append(d.name)
+    all_dates = sorted(all_dates)
+
+    if not all_dates:
+        print("No dates to index.")
+        return
+
+    # Re-render all day pages to update prev/next navigation
+    print(f"Re-rendering {len(all_dates)} day pages...")
+    for d in all_dates:
+        stage_render(d, update_index=False)
+
+    html = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>HN Time Capsule</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.6; }
+        h1 { color: #ff6600; }
+        .intro { color: #666; margin-bottom: 30px; }
+        .date-list { list-style: none; padding: 0; }
+        .date-list li { margin-bottom: 10px; }
+        .date-list a { display: block; padding: 15px 20px; background: #f5f5f5; border-radius: 6px;
+                      text-decoration: none; color: #333; transition: all 0.15s; }
+        .date-list a:hover { background: #ff6600; color: white; }
+        .date-list .date { font-weight: 500; }
+        .date-list .desc { font-size: 0.85em; color: #888; margin-top: 3px; }
+        .date-list a:hover .desc { color: rgba(255,255,255,0.8); }
+    </style>
+</head>
+<body>
+    <h1>HN Time Capsule</h1>
+    <p class="intro">
+        Revisiting Hacker News frontpages from 10 years ago, with the benefit of hindsight.
+        Each day's articles are analyzed by an LLM to see what predictions came true and which commenters were most prescient.
+    </p>
+    <ul class="date-list">
+"""
+
+    for d in reversed(all_dates):  # Most recent first
+        html += f"""        <li>
+            <a href="{d}/index.html">
+                <div class="date">{d}</div>
+                <div class="desc">10 years ago today</div>
+            </a>
+        </li>
+"""
+
+    html += """    </ul>
+</body>
+</html>"""
+
+    output_file = output_base / "index.html"
+    with open(output_file, 'w') as f:
+        f.write(html)
+
+    print(f"Rendered index to {output_file} ({len(all_dates)} dates)")
 
 
 # -----------------------------------------------------------------------------
@@ -993,7 +1111,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="HN Time Capsule Pipeline")
-    parser.add_argument("stage", choices=["fetch", "prompt", "analyze", "parse", "render", "all", "clean"],
+    parser.add_argument("stage", choices=["fetch", "prompt", "analyze", "parse", "render", "render-index", "all", "clean"],
                         help="Pipeline stage to run")
     parser.add_argument("--date", default=None, help="Target date (YYYY-MM-DD), defaults to 10 years ago")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of articles (for testing)")
@@ -1015,16 +1133,19 @@ def main():
 
     if args.stage == "clean":
         stage_clean(target_date, args.clean_stage, args.article)
-    elif args.stage == "fetch" or args.stage == "all":
-        stage_fetch(target_date, args.limit)
-    if args.stage == "prompt" or args.stage == "all":
-        stage_prompt(target_date)
-    if args.stage == "analyze" or args.stage == "all":
-        stage_analyze(target_date, args.model, args.workers)
-    if args.stage == "parse" or args.stage == "all":
-        stage_parse(target_date)
-    if args.stage == "render" or args.stage == "all":
-        stage_render(target_date)
+    elif args.stage == "render-index":
+        stage_render_index()
+    else:
+        if args.stage == "fetch" or args.stage == "all":
+            stage_fetch(target_date, args.limit)
+        if args.stage == "prompt" or args.stage == "all":
+            stage_prompt(target_date)
+        if args.stage == "analyze" or args.stage == "all":
+            stage_analyze(target_date, args.model, args.workers)
+        if args.stage == "parse" or args.stage == "all":
+            stage_parse(target_date)
+        if args.stage == "render" or args.stage == "all":
+            stage_render(target_date)  # This also calls stage_render_index()
 
 
 if __name__ == "__main__":
