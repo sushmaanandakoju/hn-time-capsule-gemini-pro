@@ -672,63 +672,18 @@ def stage_render(target_date: str):
     with open(frontpage_file) as f:
         articles = [Article(**a) for a in json.load(f)]
 
-    html_parts = [f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>HN Time Capsule - {target_date}</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
-        h1 {{ color: #ff6600; }}
-        h2 {{ border-bottom: 1px solid #eee; padding-bottom: 10px; }}
-        .article {{ margin-bottom: 40px; padding: 20px; background: #f9f9f9; border-radius: 8px; }}
-        .article-title {{ font-size: 1.3em; margin-bottom: 10px; }}
-        .article-title a {{ color: #000; text-decoration: none; }}
-        .article-title a:hover {{ text-decoration: underline; }}
-        .meta {{ color: #666; font-size: 0.9em; margin-bottom: 15px; }}
-        .grades {{ background: #fff; padding: 15px; border-radius: 4px; margin-top: 15px; }}
-        .grade {{ display: inline-block; padding: 2px 8px; margin: 2px; border-radius: 3px; font-size: 0.85em; }}
-        .grade-a {{ background: #c6efce; color: #006100; }}
-        .grade-b {{ background: #ffeb9c; color: #9c5700; }}
-        .grade-c {{ background: #ffc7ce; color: #9c0006; }}
-        .grade-d, .grade-f {{ background: #f4cccc; color: #990000; }}
-        .response {{ white-space: pre-wrap; font-size: 0.9em; background: #fff;
-                    padding: 15px; border-radius: 4px; max-height: 500px; overflow-y: auto; }}
-        details {{ margin-top: 10px; }}
-        summary {{ cursor: pointer; color: #0066cc; }}
-        .score {{ display: inline-block; padding: 3px 10px; border-radius: 12px; font-weight: bold; font-size: 0.85em; margin-left: 10px; }}
-        .score-high {{ background: #ff6600; color: white; }}
-        .score-medium {{ background: #ffcc00; color: #333; }}
-        .score-low {{ background: #ddd; color: #666; }}
-    </style>
-</head>
-<body>
-    <h1>🕰️ HN Time Capsule</h1>
-    <h2>{target_date} (10 years ago)</h2>
-"""]
-
+    # Collect all article data
+    articles_data = []
     for article in articles:
         article_dir = data_dir / article.item_id
 
-        # Load grades if available
-        grades_file = article_dir / "grades.json"
-        grades = {}
-        if grades_file.exists():
-            with open(grades_file) as f:
-                grades = json.load(f)
-
         # Load response if available
         response_file = article_dir / "response.md"
-        response = ""
-        if response_file.exists():
-            response = response_file.read_text()
+        response = response_file.read_text() if response_file.exists() else ""
 
         # Load prompt if available
         prompt_file = article_dir / "prompt.md"
-        prompt = ""
-        if prompt_file.exists():
-            prompt = prompt_file.read_text()
+        prompt = prompt_file.read_text() if prompt_file.exists() else ""
 
         # Load interestingness score if available
         score_file = article_dir / "score.json"
@@ -738,42 +693,187 @@ def stage_render(target_date: str):
                 score_data = json.load(f)
                 score = score_data.get("interestingness")
 
-        # Grade badges
+        # Load grades if available
+        grades_file = article_dir / "grades.json"
+        grades = {}
+        if grades_file.exists():
+            with open(grades_file) as f:
+                grades = json.load(f)
+
+        articles_data.append({
+            "article": article,
+            "response": response,
+            "prompt": prompt,
+            "score": score,
+            "grades": grades,
+        })
+
+    # Build HTML
+    html_parts = [f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>HN Time Capsule - {target_date}</title>
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               margin: 0; padding: 0; line-height: 1.6; height: 100vh; overflow: hidden; }}
+        .container {{ display: flex; height: 100vh; }}
+
+        /* Sidebar */
+        .sidebar {{ width: 350px; min-width: 350px; background: #f5f5f5; border-right: 1px solid #ddd;
+                   overflow-y: auto; padding: 15px; }}
+        .sidebar h1 {{ color: #ff6600; font-size: 1.3em; margin: 0 0 5px 0; }}
+        .sidebar h2 {{ font-size: 0.95em; color: #666; margin: 0 0 15px 0; font-weight: normal; }}
+        .article-item {{ padding: 10px; margin-bottom: 8px; background: #fff; border-radius: 6px;
+                        cursor: pointer; border: 2px solid transparent; transition: all 0.15s;
+                        display: flex; align-items: flex-start; gap: 10px; }}
+        .article-item:hover {{ border-color: #ff6600; }}
+        .article-item.selected {{ border-color: #ff6600; background: #fff5f0; }}
+        .article-item .score-box {{ width: 36px; height: 36px; border-radius: 6px; display: flex;
+                                   align-items: center; justify-content: center; font-weight: bold;
+                                   font-size: 0.85em; flex-shrink: 0; }}
+        .article-item .score-box.score-high {{ background: #ff6600; color: white; }}
+        .article-item .score-box.score-medium {{ background: #ffcc00; color: #333; }}
+        .article-item .score-box.score-low {{ background: #ddd; color: #666; }}
+        .article-item .score-box.score-none {{ background: #eee; color: #999; font-size: 0.7em; }}
+        .article-item .content {{ flex: 1; min-width: 0; }}
+        .article-item .title {{ font-size: 0.9em; font-weight: 500; margin-bottom: 4px; color: #333; }}
+        .article-item .meta {{ font-size: 0.75em; color: #888; }}
+        .score {{ display: inline-block; padding: 2px 6px; border-radius: 10px; font-weight: bold;
+                 font-size: 0.7em; margin-left: 6px; vertical-align: middle; }}
+        .score-high {{ background: #ff6600; color: white; }}
+        .score-medium {{ background: #ffcc00; color: #333; }}
+        .score-low {{ background: #ddd; color: #666; }}
+
+        /* Main content */
+        .main {{ flex: 1; overflow-y: auto; padding: 30px 40px; background: #fff; }}
+        .main-inner {{ max-width: 800px; }}
+        .main h1 {{ margin-top: 0; font-size: 1.5em; color: #333; }}
+        .main .article-meta {{ color: #666; font-size: 0.9em; margin-bottom: 20px; padding-bottom: 15px;
+                              border-bottom: 1px solid #eee; }}
+        .main .article-meta a {{ color: #0066cc; }}
+        .analysis {{ font-size: 0.95em; white-space: pre-wrap; line-height: 1.7; }}
+        .grades-section {{ background: #f9f9f9; padding: 15px; border-radius: 6px; margin-top: 20px; }}
+        .grade {{ display: inline-block; padding: 2px 8px; margin: 2px; border-radius: 3px; font-size: 0.8em; }}
+        .grade-a {{ background: #c6efce; color: #006100; }}
+        .grade-b {{ background: #ffeb9c; color: #9c5700; }}
+        .grade-c {{ background: #ffc7ce; color: #9c0006; }}
+        .grade-d, .grade-f {{ background: #f4cccc; color: #990000; }}
+        .prompt-section {{ margin-top: 20px; }}
+        .prompt-section summary {{ cursor: pointer; color: #0066cc; font-size: 0.9em; }}
+        .prompt-content {{ white-space: pre-wrap; font-size: 0.85em; background: #f5f5f5;
+                          padding: 15px; border-radius: 4px; margin-top: 10px; max-height: 400px; overflow-y: auto; }}
+        .placeholder {{ color: #999; text-align: center; margin-top: 100px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h1>HN Time Capsule</h1>
+            <h2>{target_date} (10 years ago)</h2>
+"""]
+
+    # Sidebar items
+    for i, data in enumerate(articles_data):
+        article = data["article"]
+        score = data["score"]
+        if score is not None:
+            score_class = "score-high" if score >= 7 else "score-medium" if score >= 4 else "score-low"
+            score_box = f'<div class="score-box {score_class}">{score}</div>'
+        else:
+            score_box = '<div class="score-box score-none">--</div>'
+
+        selected = "selected" if i == 0 else ""
+        html_parts.append(f"""
+            <div class="article-item {selected}" onclick="selectArticle({i})">
+                {score_box}
+                <div class="content">
+                    <div class="title">{article.rank}. {html.escape(article.title)}</div>
+                    <div class="meta">{article.points} pts &middot; {article.comment_count} comments</div>
+                </div>
+            </div>""")
+
+    html_parts.append("""
+        </div>
+        <div class="main">
+            <div class="main-inner" id="main-content">
+                <div class="placeholder">Select an article from the sidebar</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const articles = [""")
+
+    # JavaScript data
+    for i, data in enumerate(articles_data):
+        article = data["article"]
+        response = data["response"]
+        prompt = data["prompt"]
+        grades = data["grades"]
+        score = data["score"]
+
+        # Build grades HTML
         grade_html = ""
         if grades:
-            sorted_grades = sorted(grades.items(), key=lambda x: grade_to_numeric(x[1]), reverse=True)
-            for username, grade in sorted_grades[:15]:  # Top 15
+            sorted_grades = sorted(grades.items(), key=lambda x: -grade_to_numeric(x[1]))
+            for username, grade in sorted_grades[:20]:
                 grade_class = f"grade-{grade[0].lower()}"
-                grade_html += f'<span class="grade {grade_class}">{username}: {grade}</span> '
+                grade_html += f'<span class="grade {grade_class}">{html.escape(username)}: {grade}</span> '
 
-        # Score badge
-        score_html = ""
-        if score is not None:
-            if score >= 7:
-                score_class = "score-high"
-            elif score >= 4:
-                score_class = "score-medium"
-            else:
-                score_class = "score-low"
-            score_html = f'<span class="score {score_class}">{score}/10</span>'
+        # Escape for JS
+        title_js = json.dumps(article.title)
+        url_js = json.dumps(article.url)
+        hn_url_js = json.dumps(article.hn_url)
+        response_js = json.dumps(html.escape(response))
+        prompt_js = json.dumps(html.escape(prompt))
+        grade_html_js = json.dumps(grade_html)
 
         html_parts.append(f"""
-    <div class="article">
-        <div class="article-title">
-            {article.rank}. <a href="{article.url}" target="_blank">{html.escape(article.title)}</a>{score_html}
-        </div>
-        <div class="meta">
-            {article.points} points | {article.comment_count} comments |
-            <a href="{article.url}" target="_blank">Original Article</a> |
-            <a href="{article.hn_url}" target="_blank">HN Discussion</a>
-        </div>
-        {"<div class='grades'><strong>Grades:</strong> " + grade_html + "</div>" if grade_html else ""}
-        {"<details><summary>View LLM prompt</summary><div class='response'>" + html.escape(prompt) + "</div></details>" if prompt else ""}
-        {"<details><summary>View full analysis</summary><div class='response'>" + html.escape(response) + "</div></details>" if response else ""}
-    </div>
-""")
+        {{
+            title: {title_js},
+            url: {url_js},
+            hn_url: {hn_url_js},
+            points: {article.points},
+            comments: {article.comment_count},
+            score: {json.dumps(score)},
+            response: {response_js},
+            prompt: {prompt_js},
+            grades: {grade_html_js}
+        }},""")
 
-    html_parts.append("</body></html>")
+    html_parts.append("""
+    ];
+
+    function selectArticle(idx) {
+        // Update sidebar selection
+        document.querySelectorAll('.article-item').forEach((el, i) => {
+            el.classList.toggle('selected', i === idx);
+        });
+
+        const a = articles[idx];
+        const scoreHtml = a.score !== null ?
+            `<span class="score score-${a.score >= 7 ? 'high' : a.score >= 4 ? 'medium' : 'low'}">${a.score}/10</span>` : '';
+
+        document.getElementById('main-content').innerHTML = `
+            <h1>${a.title}${scoreHtml}</h1>
+            <div class="article-meta">
+                ${a.points} points &middot; ${a.comments} comments &middot;
+                <a href="${a.url}" target="_blank">Original Article</a> &middot;
+                <a href="${a.hn_url}" target="_blank">HN Discussion</a>
+            </div>
+            ${a.grades ? `<div class="grades-section"><strong>Grades:</strong> ${a.grades}</div>` : ''}
+            <div class="analysis">${a.response || '<em>No analysis available</em>'}</div>
+            ${a.prompt ? `<details class="prompt-section"><summary>View LLM prompt</summary><div class="prompt-content">${a.prompt}</div></details>` : ''}
+        `;
+    }
+
+    // Select first article on load
+    if (articles.length > 0) selectArticle(0);
+    </script>
+</body>
+</html>""")
 
     output_file = data_dir / "summary.html"
     with open(output_file, 'w') as f:
