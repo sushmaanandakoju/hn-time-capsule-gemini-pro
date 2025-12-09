@@ -321,15 +321,16 @@ def clean_html_to_text(text: str) -> str:
 
 PROMPT_TEMPLATE = """The following is an article that appeared on Hacker News 10 years ago, and the discussion thread.
 
-Let's use our benefit of hindsight now:
+Let's use our benefit of hindsight now in 6 sections:
 
-1. What ended up happening to this topic? (research the topic briefly and write a summary)
-2. Give out awards for "Most prescient" and "Most wrong" comments, considering what happened.
-3. Mention any other fun or notable aspects of the article or discussion.
-4. Give out grades to specific people for their comments, considering what happened.
-5. At the end, give a final score (from 0-10) for how interesting this article and its retrospect analysis was.
+1. Give a brief summary of the article and the discussion thread.
+2. What ended up happening to this topic? (research the topic briefly and write a summary)
+3. Give out awards for "Most prescient" and "Most wrong" comments, considering what happened.
+4. Mention any other fun or notable aspects of the article or discussion.
+5. Give out grades to specific people for their comments, considering what happened.
+6. At the end, give a final score (from 0-10) for how interesting this article and its retrospect analysis was.
 
-As for the format of (4), use the header "Final grades" and follow it with simply an unordered list of people and their grades in the format of "name: grade (optional comment)". Here is an example:
+As for the format of Section 5, use the header "Final grades" and follow it with simply an unordered list of people and their grades in the format of "name: grade (optional comment)". Here is an example:
 
 Final grades
 - speckx: A+ (excellent predictions on ...)
@@ -340,7 +341,9 @@ Final grades
 
 Your list may contain more people of course than just this toy example. Please follow the format exactly because I will be parsing it programmatically. The idea is that I will accumulate the grades for each account to identify the accounts that were over long periods of time the most prescient or the most wrong.
 
-As for the format of (5), use the prefix "Article hindsight analysis interestingness score:" and then the score (0-10) as a number. Here is an example:
+As for the format of Section 6, use the prefix "Article hindsight analysis interestingness score:" and then the score (0-10) as a number. Give high scores to articles/discussions that are prominent, notable, or interesting in retrospect. Give low scores in cases where few predictions are made, or the topic is very niche or obscure, or the discussion is not very interesting in retrospect.
+
+Here is an example:
 Article hindsight analysis interestingness score: 8
 
 ---
@@ -400,7 +403,8 @@ def generate_prompt(article: Article, article_text: str, article_error: str | No
 def parse_grades(text: str) -> dict[str, str]:
     """Parse the Final grades section from LLM output."""
     grades = {}
-    pattern = r'(?:^|\n)(?:#+ *)?Final grades\s*\n'
+    # Match "Final grades" with optional leading section number, #, or other prefixes
+    pattern = r'(?:^|\n)(?:\d+[\.\)]\s*)?(?:#+ *)?Final grades\s*\n'
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return grades
