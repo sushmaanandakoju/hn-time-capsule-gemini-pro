@@ -1,5 +1,7 @@
 # HN Time Capsule
 
+![hero](hnhero.png)
+
 A Hacker News time capsule project that pulls the HN frontpage from exactly 10 years ago, analyzes articles and discussions using an LLM to evaluate prescience with the benefit of hindsight, and generates an HTML report.
 
 ## What it does
@@ -22,7 +24,7 @@ The goal is to find which HN commenters were most prescient or most wrong over t
 # Install dependencies
 uv sync
 
-# Set up OpenAI API key
+# Set up OpenAI API key into a .env file
 echo "OPENAI_API_KEY=your-key-here" > .env
 ```
 
