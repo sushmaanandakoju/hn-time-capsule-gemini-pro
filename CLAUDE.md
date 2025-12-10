@@ -30,7 +30,6 @@ uv run python pipeline.py fetch --date 2015-06-15
 
 ### Main Files
 - `pipeline.py` - The main pipeline with 5 stages. This is the primary entry point.
-- `parse_grades.py` - Standalone grade parser (can test with `uv run python parse_grades.py output.txt`)
 
 ### Pipeline Stages (in pipeline.py)
 1. **fetch** (`stage_fetch`) - Fetches HN frontpage, article content, and comments. Caches everything.
