@@ -599,6 +599,8 @@ def stage_prompt(target_date: str):
 
     print(f"\nPrompts generated in {data_dir}")
 
+# Modified to include gemini-2.5-flash only
+# TODO: add openai back with changes
 
 def stage_analyze(target_date: str, model: str = "gemini-2.5-flash", max_workers: int = 5):
     """Stage 3: Run LLM analysis on all prompts using the Gemini API."""
