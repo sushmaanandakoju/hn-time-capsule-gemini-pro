@@ -1355,8 +1355,7 @@ def stage_render_hall_of_fame():
             "grades": grades
         })
 
-    #    for u in user_stats:
-    #       print(u["num_grades"])
+
     # Filter to users with at least 3 grades
     user_stats = [u for u in user_stats if u["num_grades"] >= 3]
 
@@ -1365,7 +1364,6 @@ def stage_render_hall_of_fame():
     # v = number of votes, R = user's average, m = prior weight, C = global mean
     global_mean = sum(all_gpas) / len(all_gpas) if all_gpas else 3.0
     m = 3  # Prior weight - effectively adds 3 "average" votes to each user
-#    print(user_stats)
     for u in user_stats:
         v = u["num_grades"]
         R = u["avg_gpa"]
@@ -1503,7 +1501,6 @@ def stage_render_hall_of_fame():
     output_file = output_base / "hall-of-fame.html"
     with open(output_file, 'w') as f:
         f.write(page_html)
-#    print(user_stats)
     print(f"Rendered Hall of Fame to {output_file} ({len(user_stats)} users)")
 
 # -----------------------------------------------------------------------------
