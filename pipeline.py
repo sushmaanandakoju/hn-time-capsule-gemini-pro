@@ -2,11 +2,11 @@
 HN Time Capsule Pipeline
 
 Stages:
-1. fetch    - Fetch frontpage and articles for a given date
-2. prompt   - Generate LLM prompts for each article
-3. analyze  - Run LLM analysis on prompts
-4. parse    - Parse grades from LLM responses
-5. render   - Generate HTML summary
+1. fetch    - Fetch frontpage and articles for a given date
+2. prompt   - Generate LLM prompts for each article
+3. analyze  - Run LLM analysis on prompts (Now uses Gemini)
+4. parse    - Parse grades from LLM responses
+5. render   - Generate HTML summary
 """
 
 import json
@@ -22,6 +22,17 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dotenv import load_dotenv
+
+# --- GEMINI IMPORTS ---
+try:
+    from google import genai
+    from google.genai.errors import APIError as GeminiAPIError
+except ImportError:
+    genai = None
+    GeminiAPIError = Exception
+# ----------------------
 
 
 # -----------------------------------------------------------------------------
@@ -347,7 +358,7 @@ Final grades
 
 Your list may contain more people of course than just this toy example. Please follow the format exactly because I will be parsing it programmatically. The idea is that I will accumulate the grades for each account to identify the accounts that were over long periods of time the most prescient or the most wrong.
 
-As for the format of Section 6, use the prefix "Article hindsight analysis interestingness score:" and then the score (0-10) as a number. Give high scores to articles/discussions that are prominent, notable, or interesting in retrospect. Give low scores in cases where few predictions are made, or the topic is very niche or obscure, or the discussion is not very interesting in retrospect.
+As for the format of Section 6, use the prefix "Article hindsight analysis interestingness score:" and then the score (0-10) as a number. Give high scores to articles/discussions that are prominent, notable, or interesting in retrospect. Give low scores in cases where few predictions are made, or the topic is very niche or obscure, or the discussion is not very very interesting in retrospect.
 
 Here is an example:
 Article hindsight analysis interestingness score: 8
@@ -413,7 +424,7 @@ def parse_grades(text: str) -> dict[str, dict]:
     """
     grades = {}
     # Match "Final grades" with optional leading section number, #, or other prefixes
-    pattern = r'(?:^|\n)(?:\d+[\.\)]\s*)?(?:#+ *)?Final grades\s*\n'
+    pattern = r'(?:^|\n)(?:\d+[\.\)]\s*)?(?:#+ *)?5. Final grades\s*\n'
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return grades
@@ -456,6 +467,7 @@ def grade_to_numeric(grade: str) -> float:
 
 def parse_interestingness_score(text: str) -> int | None:
     """Parse the interestingness score (0-10) from LLM output."""
+    print(text)
     pattern = r'Article hindsight analysis interestingness score:\s*(\d+)'
     match = re.search(pattern, text, re.IGNORECASE)
     if match:
@@ -588,15 +600,23 @@ def stage_prompt(target_date: str):
     print(f"\nPrompts generated in {data_dir}")
 
 
-def stage_analyze(target_date: str, model: str = "gpt-5.1", max_workers: int = 5):
-    """Stage 3: Run LLM analysis on all prompts."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from dotenv import load_dotenv
-    from openai import OpenAI
-
+def stage_analyze(target_date: str, model: str = "gemini-2.5-flash", max_workers: int = 5):
+    """Stage 3: Run LLM analysis on all prompts using the Gemini API."""
+    
+    # Load environment variables (e.g., GEMINI_API_KEY)
     load_dotenv()
-    client = OpenAI()
     data_dir = get_data_dir(target_date)
+
+    if genai is None:
+        print("Error: 'google-genai' package is not installed. Please install it.")
+        return
+    
+    try:
+        # Initialize the Gemini Client
+        client = genai.Client()
+    except Exception as e:
+        print(f"Error initializing Gemini client. Is GEMINI_API_KEY set? Error: {e}")
+        return
 
     # Collect articles to analyze
     to_analyze = []
@@ -611,34 +631,52 @@ def stage_analyze(target_date: str, model: str = "gpt-5.1", max_workers: int = 5
             continue
 
         meta_file = article_dir / "meta.json"
-        with open(meta_file) as f:
-            article = Article(**json.load(f))
-
-        to_analyze.append((article_dir, article, prompt_file.read_text()))
+        try:
+            with open(meta_file) as f:
+                article = Article(**json.load(f))
+            prompt_text = prompt_file.read_text()
+            to_analyze.append((article_dir, article, prompt_text))
+        except Exception as e:
+            print(f"Skipping directory {article_dir.name} due to read error: {e}")
+            continue
 
     if not to_analyze:
         print("No articles to analyze.")
         return
 
-    print(f"Analyzing {len(to_analyze)} articles with {max_workers} workers...")
+    print(f"Analyzing {len(to_analyze)} articles with {max_workers} workers using {model}...")
 
     def analyze_one(item):
+        """Worker function to process a single article/prompt using Gemini."""
         article_dir, article, prompt = item
         response_file = article_dir / "response.md"
+        
         try:
-            response = client.responses.create(
+            # --- Gemini API Call ---
+            response = client.models.generate_content(
                 model=model,
-                input=prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "medium"},
+                contents=prompt,
+                # Optional: Add configuration for safety or control if needed
+                # config=genai.types.GenerateContentConfig(
+                #     temperature=0.7
+                # )
             )
-            result = response.output_text
+            result = response.text
+            # -----------------------
+
             with open(response_file, 'w') as f:
                 f.write(result)
+            
             return (article.item_id, article.title[:50], len(result), None)
+        
+        except GeminiAPIError as e:
+            # Catch specific Gemini API errors
+            return (article.item_id, article.title[:50], 0, f"Gemini API Error: {e}")
         except Exception as e:
+            # Catch other potential errors (file I/O, etc.)
             return (article.item_id, article.title[:50], 0, str(e))
 
+    # Run analysis concurrently
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(analyze_one, item): item for item in to_analyze}
         for future in as_completed(futures):
@@ -668,6 +706,7 @@ def stage_parse(target_date: str):
             continue
 
         response = response_file.read_text()
+        print(response)
         grades = parse_grades(response)  # Now returns {username: {grade, rationale}}
         score = parse_interestingness_score(response)
 
@@ -870,12 +909,12 @@ def stage_render(target_date: str, update_index: bool = True):
     <style>
         * {{ box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               margin: 0; padding: 0; line-height: 1.6; height: 100vh; overflow: hidden; }}
+                margin: 0; padding: 0; line-height: 1.6; height: 100vh; overflow: hidden; }}
         .container {{ display: flex; height: 100vh; }}
 
         /* Sidebar */
         .sidebar {{ width: 350px; min-width: 350px; background: #f5f5f5; border-right: 1px solid #ddd;
-                   overflow-y: auto; padding: 15px; }}
+                    overflow-y: auto; padding: 15px; }}
         .sidebar h1 {{ color: #ff6600; font-size: 1.3em; margin: 0 0 5px 0; }}
         .sidebar h1 a {{ color: #ff6600; text-decoration: none; }}
         .sidebar h1 a:hover {{ text-decoration: underline; }}
@@ -885,13 +924,13 @@ def stage_render(target_date: str, update_index: bool = True):
         .nav a:hover {{ text-decoration: underline; }}
         .nav .disabled {{ color: #ccc; }}
         .article-item {{ padding: 10px; margin-bottom: 8px; background: #fff; border-radius: 6px;
-                        cursor: pointer; border: 2px solid transparent; transition: all 0.15s;
-                        display: flex; align-items: flex-start; gap: 10px; }}
+                         cursor: pointer; border: 2px solid transparent; transition: all 0.15s;
+                         display: flex; align-items: flex-start; gap: 10px; }}
         .article-item:hover {{ border-color: #ff6600; }}
         .article-item.selected {{ border-color: #ff6600; background: #fff5f0; }}
         .article-item .score-box {{ width: 36px; height: 36px; border-radius: 6px; display: flex;
-                                   align-items: center; justify-content: center; font-weight: bold;
-                                   font-size: 0.85em; flex-shrink: 0; }}
+                                     align-items: center; justify-content: center; font-weight: bold;
+                                     font-size: 0.85em; flex-shrink: 0; }}
         .article-item .score-box.score-10 {{ background: #c2410c; color: white; }}
         .article-item .score-box.score-9 {{ background: #ea580c; color: white; }}
         .article-item .score-box.score-8 {{ background: #f97316; color: white; }}
@@ -908,7 +947,7 @@ def stage_render(target_date: str, update_index: bool = True):
         .article-item .title {{ font-size: 0.9em; font-weight: 500; margin-bottom: 4px; color: #333; }}
         .article-item .meta {{ font-size: 0.75em; color: #888; }}
         .score {{ display: inline-block; padding: 2px 6px; border-radius: 10px; font-weight: bold;
-                 font-size: 0.7em; margin-left: 6px; vertical-align: middle; }}
+                  font-size: 0.7em; margin-left: 6px; vertical-align: middle; }}
         .score.score-10 {{ background: #c2410c; color: white; }}
         .score.score-9 {{ background: #ea580c; color: white; }}
         .score.score-8 {{ background: #f97316; color: white; }}
@@ -926,7 +965,7 @@ def stage_render(target_date: str, update_index: bool = True):
         .main-inner {{ max-width: 800px; }}
         .main h1 {{ margin-top: 0; font-size: 1.5em; color: #333; }}
         .main .article-meta {{ color: #666; font-size: 0.9em; margin-bottom: 20px; padding-bottom: 15px;
-                              border-bottom: 1px solid #eee; }}
+                                 border-bottom: 1px solid #eee; }}
         .main .article-meta a {{ color: #0066cc; }}
         .analysis {{ font-size: 0.95em; line-height: 1.5; }}
         .grades-section {{ background: #f9f9f9; padding: 15px; border-radius: 6px; margin-top: 20px; }}
@@ -938,7 +977,7 @@ def stage_render(target_date: str, update_index: bool = True):
         .prompt-section {{ margin-top: 20px; }}
         .prompt-section summary {{ cursor: pointer; color: #0066cc; font-size: 0.9em; }}
         .prompt-content {{ white-space: pre-wrap; font-size: 0.85em; background: #f5f5f5;
-                          padding: 15px; border-radius: 4px; margin-top: 10px; max-height: 400px; overflow-y: auto; }}
+                             padding: 15px; border-radius: 4px; margin-top: 10px; max-height: 400px; overflow-y: auto; }}
         .placeholder {{ color: #999; text-align: center; margin-top: 100px; }}
 
         /* Markdown content styling */
@@ -1006,7 +1045,7 @@ def stage_render(target_date: str, update_index: bool = True):
     // Preprocess markdown to remove excessive whitespace
     function cleanMarkdown(md) {
         return md
-            .replace(/  +$/gm, '')
+            .replace(/  +$/gm, '')
             .replace(/\\n\\n\\n+/g, '\\n\\n');
     }
 
@@ -1029,6 +1068,18 @@ def stage_render(target_date: str, update_index: bool = True):
                 if isinstance(val, dict):
                     return val.get("grade", "")
                 return val
+            # Note: This uses a Python function defined globally in the file scope
+            # and is being called inside this block to sort grades for rendering in JS.
+            # We are assuming `grade_to_numeric` is available in this scope, which it is.
+            
+            # The HTML rendering part of the Python script uses grade_to_numeric,
+            # so we keep that logic here to ensure the display order is correct.
+            # JS uses its own sort logic below.
+            
+            # Note: The JS side needs its own grade_to_numeric implementation for sorting!
+            # I will ensure the JS side has the necessary logic for correct sorting.
+            
+            # For the Python side generating the JS data:
             sorted_grades = sorted(grades.items(), key=lambda x: -grade_to_numeric(get_grade(x)))
             for username, grade_info in sorted_grades[:20]:
                 grade = get_grade((username, grade_info))
@@ -1061,6 +1112,21 @@ def stage_render(target_date: str, update_index: bool = True):
 
     html_parts.append("""
     ];
+    
+    // JS implementation of grade_to_numeric for client-side sorting consistency
+    function grade_to_numeric(grade) {
+        if (!grade) return 0.0;
+        const base = {'A': 4.0, 'B': 3.0, 'C': 2.0, 'D': 1.0, 'F': 0.0};
+        let value = base[grade[0].toUpperCase()] || 0.0;
+        if (grade.length > 1) {
+            if (grade[1] === '+') {
+                value += 0.3;
+            } else if (grade[1] === '-' || grade[1] === '−') {
+                value -= 0.3;
+            }
+        }
+        return value;
+    }
 
     function selectArticle(idx, updateHash = true) {
         // Update sidebar selection
@@ -1162,7 +1228,7 @@ def stage_render_index():
     <style>
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.6; }
+                max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.6; }
         h1 { color: #ff6600; }
         .intro { color: #666; margin-bottom: 30px; }
         .hall-of-fame-link { display: inline-block; margin-bottom: 30px; padding: 12px 24px;
@@ -1185,7 +1251,9 @@ def stage_render_index():
     <h1>HN Time Capsule</h1>
     <p class="intro">
         LLMs revisit Hacker News frontpages from 10 years ago (December 2015), with the benefit of hindsight.
-        Each day's articles and comments are analyzed by ChatGPT 5.1 (with thinking + browser tool) to compare what was said to what actually happened and users are graded on how prescient they were in retrospect. 30 articles per front page and 31 of them => 930 GPT 5.1 Thinking calls led to total cost of ~$60.
+        Each day's articles and comments are analyzed by **Gemini 2.5 Flash** to compare what was said to what actually happened and users are graded on how prescient they were in retrospect.
+        <br><br>
+        *Note: The original setup used ChatGPT 5.1 with thinking/browser tools; this pipeline has been converted to use the **Gemini 2.5 Flash** model.*
     </p>
     <h2>Browse by User</h2>
     <a href="hall-of-fame.html" class="hall-of-fame-link">Hall of Fame</a>
@@ -1287,6 +1355,8 @@ def stage_render_hall_of_fame():
             "grades": grades
         })
 
+    #    for u in user_stats:
+    #       print(u["num_grades"])
     # Filter to users with at least 3 grades
     user_stats = [u for u in user_stats if u["num_grades"] >= 3]
 
@@ -1295,7 +1365,7 @@ def stage_render_hall_of_fame():
     # v = number of votes, R = user's average, m = prior weight, C = global mean
     global_mean = sum(all_gpas) / len(all_gpas) if all_gpas else 3.0
     m = 3  # Prior weight - effectively adds 3 "average" votes to each user
-
+#    print(user_stats)
     for u in user_stats:
         v = u["num_grades"]
         R = u["avg_gpa"]
@@ -1420,7 +1490,7 @@ def stage_render_hall_of_fame():
         for g in sorted_grades:
             color = grade_color(g["grade"])
             rationale_part = f'<div class="gr">"{html.escape(g["rationale"])}"</div>' if g["rationale"] else ""
-            analysis_url = f"{g['date']}/index.html#article-{g['article_id']}"
+            analysis_url = f"../{g['date']}/index.html#article-{g['article_id']}"
 
             page_html += f"""<div class="gi"><div class="gb" style="background:{color}">{g['grade']}</div><div class="gc"><div class="ga"><a href="{analysis_url}">{html.escape(g['article_title'])}</a></div>{rationale_part}<div class="gm"><a href="{analysis_url}">View</a> &middot; <a href="{g['hn_url']}" target="_blank">HN</a> &middot; {g['date']}</div></div></div>"""
 
@@ -1433,9 +1503,8 @@ def stage_render_hall_of_fame():
     output_file = output_base / "hall-of-fame.html"
     with open(output_file, 'w') as f:
         f.write(page_html)
-
+#    print(user_stats)
     print(f"Rendered Hall of Fame to {output_file} ({len(user_stats)} users)")
-
 
 # -----------------------------------------------------------------------------
 # CLI
@@ -1449,7 +1518,8 @@ def main():
                         help="Pipeline stage to run")
     parser.add_argument("--date", default=None, help="Target date (YYYY-MM-DD), defaults to 10 years ago")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of articles (for testing)")
-    parser.add_argument("--model", default="gpt-5.1", help="OpenAI model for analysis")
+    # --- UPDATED DEFAULT MODEL ---
+    parser.add_argument("--model", default="gemini-2.5-flash", help="LLM model for analysis (e.g., gemini-2.5-flash)")
     parser.add_argument("--workers", type=int, default=15, help="Number of parallel workers for analysis")
     parser.add_argument("--clean-stage", choices=["fetch", "prompt", "analyze", "parse"],
                         help="For clean: only clean this stage and downstream (default: all)")
@@ -1475,6 +1545,7 @@ def main():
         if args.stage == "prompt" or args.stage == "all":
             stage_prompt(target_date)
         if args.stage == "analyze" or args.stage == "all":
+            # Pass the selected model (defaulted to gemini-2.5-flash)
             stage_analyze(target_date, args.model, args.workers)
         if args.stage == "parse" or args.stage == "all":
             stage_parse(target_date)
